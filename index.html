@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <title>Snap Disappear Gesture Effect</title>
+  <!-- Load MediaPipe Tasks Vision (Gesture & Segmentation) -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision/vision_bundle.js" crossorigin="anonymous"></script>
+
+  <style>
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background: #1e1e24;
+      color: #fff;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      margin: 0;
+    }
+
+    h1 { margin-bottom: 5px; }
+    p { margin-top: 0; color: #bbb; }
+
+    .instructions {
+      background: #2a2a35;
+      padding: 12px 20px;
+      border-radius: 8px;
+      margin-bottom: 15px;
+      display: flex;
+      gap: 20px;
+    }
+
+    .badge {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-weight: bold;
+    }
+
+    .container {
+      position: relative;
+      width: 640px;
+      height: 480px;
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+      background: #000;
+    }
+
+    video { display: none; }
+    canvas { width: 640px; height: 480px; }
+
+    #status {
+      position: absolute;
+      top: 15px;
+      left: 15px;
+      padding: 6px 14px;
+      border-radius: 20px;
+      font-size: 14px;
+      font-weight: bold;
+      background: rgba(0,0,0,0.6);
+      backdrop-filter: blur(4px);
+    }
+  </style>
+</head>
+<body>
+
+  <h1>Magic Disappear Effect ✨</h1>
+  <p>Gunakan gestur tangan untuk menghilang dan muncul kembali</p>
+
+  <div class="instructions">
+    <div class="badge">✊ / Pinch / Jentik: <span>Hilang 🫥</span></div>
+    <div class="badge">🤚 Open Palm: <span>Muncul 👤</span></div>
+  </div>
+
+  <div class="container">
+    <video id="webcam" autoplay playsinline></video>
+    <canvas id="canvas"></canvas>
+    <div id="status">Status: Muncul 👁️</div>
+  </div>
+
+  <script type="module">
+    import { GestureRecognizer, ImageSegmenter, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision/vision_bundle.js";
+
+    const video = document.getElementById("webcam");
+    const canvas = document.getElementById("canvas");
+    const ctx = canvas.getContext("2d");
+    const statusDiv = document.getElementById("status");
+
+    let gestureRecognizer;
+    let imageSegmenter;
+    let isVisible = true; // State apakah orangnya kelihatan atau hilang
+    let lastVideoTime = -1;
+
+    // 1. Inisialisasi MediaPipe AI Models
+    async function initAI() {
+      const vision = await FilesetResolver.forVisionTasks(
+        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision/wasm"
+      );
+
+      // Model Deteksi Gestur Tangan
+      gestureRecognizer = await GestureRecognizer.createFromOptions(vision, {
+        baseOptions: {
+          modelAssetPath: "https://storage.googleapis.com/mediapipe-models/gesture_recognizer/gesture_recognizer/float16/1/gesture_recognizer.task",
+          delegate: "GPU"
+        },
+        runningMode: "VIDEO",
+        numHands: 1
+      });
+
+      // Model Segmentasi Orang (Selfie Segmentation)
+      imageSegmenter = await ImageSegmenter.createFromOptions(vision, {
+        baseOptions: {
+          modelAssetPath: "https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float128/1/selfie_segmenter.tflite",
+          delegate: "GPU"
+        },
+        runningMode: "VIDEO",
+        outputCategoryMask: true
+      });
+
+      startCamera();
+    }
+
+    // 2. Akses Kamera Webcam
+    function startCamera() {
+      navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } })
+        .then((stream) => {
+          video.srcObject = stream;
+          video.addEventListener("loadeddata", renderLoop);
+        })
+        .catch((err) => console.error("Kamera gagal diakses:", err));
+    }
+
+    // 3. Loop Deteksi & Drawing Frame demi Frame
+    async function renderLoop() {
+      if (video.currentTime !== lastVideoTime) {
+        lastVideoTime = video.currentTime;
+        let nowInMs = Date.now();
+
+        // Canvas Resolution
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+
+        // A. Deteksi Gestur Tangan
+        const gestureResult = await gestureRecognizer.recognizeForVideo(video, nowInMs);
+        if (gestureResult.gestures.length > 0) {
+          const topGesture = gestureResult.gestures[0][0].categoryName;
+          
+          // Jika deteksi telapak tangan terbuka 'Open_Palm' -> Muncul kembali
+          if (topGesture === "Open_Palm") {
+            isVisible = true;
+            statusDiv.innerText = "Status: Muncul 👁️";
+            statusDiv.style.color = "#4CAF50";
+          } 
+          // Jika kepal tangan 'Closed_Fist' / Pinch -> Hilang
+          else if (topGesture === "Closed_Fist" || topGesture === "Pointing_Up") {
+            isVisible = false;
+            statusDiv.innerText = "Status: Hilang 🫥";
+            statusDiv.style.color = "#FF5252";
+          }
+        }
+
+        // B. Segmentasi Tubuh & Render Hasil
+        if (isVisible) {
+          // Jika mode Muncul: Tampilkan video webcam biasa
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        } else {
+          // Jika mode Hilang: Pisahkan orang dan background
+          const segmentationResult = await imageSegmenter.segmentForVideo(video, nowInMs);
+          const categoryMask = segmentationResult.categoryMask;
+
+          if (categoryMask) {
+            const maskData = categoryMask.getAsUint8Array();
+            
+            // Buat buffer temporary untuk memanipulasi pixel
+            const imgData = ctx.createImageData(canvas.width, canvas.height);
+            
+            // Gambar video awal ke canvas temporary
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            const rawImageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+
+            // Loop setiap pixel
+            for (let i = 0; i < maskData.length; i++) {
+              const isPerson = maskData[i] > 0; // 0 = Background, >0 = Orang
+              
+              const pixelIndex = i * 4;
+              if (isPerson) {
+                // Hilangkan pixel orang (Ubah ke background hitam)
+                imgData.data[pixelIndex] = 20;     // R
+                imgData.data[pixelIndex + 1] = 20; // G
+                imgData.data[pixelIndex + 2] = 25; // B
+                imgData.data[pixelIndex + 3] = 255; // Alpha
+              } else {
+                // Pertahankan pixel background
+                imgData.data[pixelIndex] = rawImageData.data[pixelIndex];
+                imgData.data[pixelIndex + 1] = rawImageData.data[pixelIndex + 1];
+                imgData.data[pixelIndex + 2] = rawImageData.data[pixelIndex + 2];
+                imgData.data[pixelIndex + 3] = rawImageData.data[pixelIndex + 3];
+              }
+            }
+            ctx.putImageData(imgData, 0, 0);
+          }
+        }
+      }
+
+      requestAnimationFrame(renderLoop);
+    }
+
+    // Jalankan aplikasi
+    initAI();
+  </script>
+</body>
+</html>
